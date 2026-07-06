@@ -12,10 +12,11 @@ import argparse
 import json
 import sys
 import textwrap
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 
 DEFAULT_PLANNER_MODEL = "mistral"
@@ -50,14 +51,30 @@ def node_to_dict(node: Node) -> dict[str, Any]:
     }
 
 
+LogCallback = Callable[[str], None]
+
+
 class OllamaClient:
-    def __init__(self, base_url: str, mock: bool = False) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        mock: bool = False,
+        logger: LogCallback | None = None,
+    ) -> None:
         self.base_url = base_url.rstrip("/")
         self.mock = mock
+        self.logger = logger
 
     def generate(self, model: str, prompt: str) -> str:
+        started_at = time.perf_counter()
+        self.log(f"▶️ Calling {model} with {len(prompt):,} prompt chars")
         if self.mock:
-            return self._mock_generate(model, prompt)
+            response = self._mock_generate(model, prompt)
+            self.log(
+                f"✅ {model} mock response in {time.perf_counter() - started_at:.1f}s "
+                f"({len(response):,} chars)"
+            )
+            return response
 
         payload = {
             "model": model,
@@ -81,7 +98,16 @@ class OllamaClient:
                 "Start it with `ollama serve` or rerun with `--mock`."
             ) from exc
 
-        return str(data.get("response", "")).strip()
+        output = str(data.get("response", "")).strip()
+        self.log(
+            f"✅ {model} response in {time.perf_counter() - started_at:.1f}s "
+            f"({len(output):,} chars)"
+        )
+        return output
+
+    def log(self, message: str) -> None:
+        if self.logger:
+            self.logger(message)
 
     def _mock_generate(self, model: str, prompt: str) -> str:
         prompt_lower = prompt.lower()
@@ -132,6 +158,7 @@ def parse_json_object(raw: str) -> dict[str, Any]:
 
 
 def plan_subtasks(client: OllamaClient, model: str, task: str, max_children: int) -> list[str]:
+    client.log(f"🧩 Planning up to {max_children} subtasks for: {compact(task, 90)}")
     prompt = f"""
 You are the planner in a recursive LLM system.
 Break the user's task into {max_children} small, independent subtasks.
@@ -152,10 +179,13 @@ User task:
     subtasks = data.get("subtasks", [])
     if not isinstance(subtasks, list) or not subtasks:
         raise ValueError(f"Planner did not return subtasks: {raw}")
-    return [str(item).strip() for item in subtasks[:max_children] if str(item).strip()]
+    planned = [str(item).strip() for item in subtasks[:max_children] if str(item).strip()]
+    client.log(f"🧩 Planned {len(planned)} subtasks: {', '.join(planned)}")
+    return planned
 
 
 def solve_task(client: OllamaClient, model: str, task: str, context: str) -> str:
+    client.log(f"🧠 Solving: {compact(task, 90)}")
     prompt = f"""
 You are the solver in a recursive LLM system.
 Solve the task directly and concisely.
@@ -175,6 +205,7 @@ Task:
 
 
 def critique_solution(client: OllamaClient, model: str, task: str, answer: str) -> dict[str, Any]:
+    client.log(f"🔍 Critiquing: {compact(task, 90)}")
     prompt = f"""
 You are the critic in a recursive LLM system.
 Evaluate whether the answer is good enough or needs one more recursive pass.
@@ -199,11 +230,16 @@ Answer:
 """
     raw = client.generate(model, textwrap.dedent(prompt).strip())
     data = parse_json_object(raw)
-    return {
+    critique = {
         "critique": str(data.get("critique", "")).strip(),
         "confidence": float(data.get("confidence", 0.0)),
         "needs_more_recursion": bool(data.get("needs_more_recursion", False)),
     }
+    client.log(
+        f"🔍 Critique confidence={critique['confidence']:.2f}, "
+        f"needs_more_recursion={critique['needs_more_recursion']}"
+    )
+    return critique
 
 
 def synthesize_final(
@@ -213,6 +249,7 @@ def synthesize_final(
     task: str,
     root: Node,
 ) -> str:
+    client.log("🧵 Synthesizing final answer")
     child_summaries = "\n\n".join(
         f"Subtask: {child.title}\nAnswer: {child.answer}\nCritique: {child.critique}"
         for child in root.children
@@ -252,6 +289,7 @@ def recursive_solve(
     max_children: int,
     context: str = "",
 ) -> Node:
+    client.log(f"🌱 Enter depth {depth}: {compact(task, 90)}")
     node = Node(
         title=task,
         role="root" if depth == 0 else "subtask",
@@ -280,6 +318,7 @@ def recursive_solve(
     node.critique = critique["critique"]
     node.confidence = critique["confidence"]
     node.needs_more_recursion = critique["needs_more_recursion"] and depth < max_depth
+    client.log(f"🏁 Exit depth {depth}: {compact(task, 90)}")
     return node
 
 
