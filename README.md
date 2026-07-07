@@ -78,6 +78,7 @@ To get the absolute best performance on 24 GB Unified Memory, configure the side
 
 ---
 
-## 📺 Demo Video
-A full walkthrough demonstration is available in:
-`demo/Screen Recording 2026-07-07 at 9.23.35 AM.mov`
+## 📺 Demo Videos
+Walkthrough demonstrations are available in the `demo/` directory:
+* **Base interface, streaming & columns demo**: `demo/Screen Recording 2026-07-07 at 9.23.35 AM.mov`
+* **Multimodal vision audit demo**: `demo/multimodal demo.mp4`
